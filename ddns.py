@@ -1,119 +1,177 @@
-#replace here要替换成自己的参数！！！
-#replace here要替换成自己的参数！！！
-#replace here要替换成自己的参数！！！
-#重要的事情说三遍！！！
-
 #安装以下sdk
 #pip install aliyun-python-sdk-core
 #pip install aliyun-python-sdk-alidns
 
 import telnetlib
 import re
-from time import sleep
 import logging
+from time import sleep
+from datetime import datetime
 from aliyunsdkcore.client import AcsClient
 from aliyunsdkcore.request import CommonRequest
-from datetime import datetime
+import configparser
+import os
+import traceback
 
-#防火墙，路由器
-HUAWEI_FIREWALL_IP = 'replace here'  #防火墙ip
-TELNET_PORT = 23  #telnet端口
-USERNAME = 'replace here'  #用户名
-PASSWORD = 'replace here'  #密码
-INTERFACE = 'replace here'  #拨号接口(华为设备是用dialer虚拟拨号接口不是物理接口！！！)
-Time = 30 #ip查询间隔时间
+#sleep(100) # 不要让用户觉得启动的太快
 
-# 阿里云 API 认证信息
-ACCESS_KEY = 'replace here'
-AccessKey_Secret = 'replace here'
-DOMAIN = 'replace here'
-RECORD_ID = 'replace here'
-Record_name='replace here'
+# 创建一个示例配置文件的函数
+def create_sample_config_file(path):
+    config = configparser.ConfigParser()
+    config['DEVICE1'] = {
+        'DEVICE_IP': '0.0.0.0',
+        'TELNET_PORT': '23',
+        'USERNAME': 'username',
+        'PASSWORD': 'password',
+        'INTERFACE': 'Dialer0',
+        'Time': '30',
+        'ACCESS_KEY': 'access_key',
+        'AccessKey_Secret': 'accesskey_secret',
+        'DOMAIN': 'example.com',
+        'RECORD_ID': 'record_id',
+        'Record_name': 'www',
+        'Retry_Interval': '5'
+    }
+    with open(path, 'w') as configfile:
+        config.write(configfile)
 
-#Telnet登录
-def get_pppoe_ip():
-    try:
-        #建立Telnet连接
-        telnet = telnetlib.Telnet(HUAWEI_FIREWALL_IP, TELNET_PORT, timeout=10)
+# 配置文件设置
+script_dir = os.path.dirname(os.path.realpath(__file__))
+config_file_path = os.path.join(script_dir, 'config.ini')
 
-        #登录
-        telnet.read_until(b"Username:")
-        telnet.write(USERNAME.encode('ascii') + b"\n")
-        telnet.read_until(b"Password:")
-        telnet.write(PASSWORD.encode('ascii') + b"\n")
-        sleep(2)
+# 检查配置文件是否存在
+if not os.path.exists(config_file_path):
+    create_sample_config_file(config_file_path)
+    logging.error(f"未找到配置文件。已创建一个示例配置文件位于 {config_file_path}。请根据你的设置更改它。")
+    exit(1)
 
-        #ip_get指令
-        telnet.write(b"display ip interface brief\n")
-        sleep(2)
-        output = telnet.read_very_eager().decode('ascii')
+config = configparser.ConfigParser()
+config.read(config_file_path)
 
-        #从返回值中获取ip
-        ip_address_pattern = rf'{INTERFACE}\s+(\S+)/\d+\s+up\s+up\(s\)'
-        ip_address_match = re.search(ip_address_pattern, output)
-        if ip_address_match:
-            return ip_address_match.group(1)
-        else:
-            return "IP not found"
-
-    except Exception as e:
-        return f"Error: {str(e)}"
-    
-# 配置日志
+# 日志配置
 logging.basicConfig(
     filename='ddns_update.log',
     level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s: %(message)s',  # 添加时间戳
-    datefmt='%Y-%m-%d %H:%M:%S'  # 定义时间戳的格式
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# 更新阿里云 DNS 记录
-def update_dns_record(ip, record_name):
-    client = AcsClient(ACCESS_KEY, AccessKey_Secret, 'cn-hangzhou')
-    request = CommonRequest()
-    request.set_accept_format('json')
-    request.set_domain('alidns.aliyuncs.com')
-    request.set_method('POST')
-    request.set_version('2015-01-09')
-    request.set_action_name('UpdateDomainRecord')
-    request.add_query_param('RecordId', RECORD_ID)
-    request.add_query_param('RR', record_name)
-    request.add_query_param('Type', 'A')
-    request.add_query_param('Value', ip)
+# 获取带重试机制的PPPoE IP地址的函数
+def get_pppoe_ip(device_config):
+    #print("Debug: get_pppoe_ip called with device_config:", device_config)
 
-    response = client.do_action_with_exception(request)
-    return response
+    max_retries = 5
+    retry_interval = int(device_config['retry_interval'])
+    #print("Debug: retry_interval set to", retry_interval)
 
-def get_current_time_formatted():
-    # 获取当前时间
-    current_time = datetime.now()
-    # 格式化时间为 [YYYY-MM-DD HH:MM:SS]
-    formatted_time = current_time.strftime("[%Y-%m-%d %H:%M:%S]")
-    return formatted_time
+    for attempt in range(max_retries):
+        try:
+            device_ip = device_config['device_ip']
+            #print("Debug: device_ip set to", device_ip)
+            with telnetlib.Telnet(device_config['device_ip'], int(device_config['telnet_port']), timeout=10) as telnet:
+                # Telnet操作代码
+                telnet.read_until(b"Username:")
+                telnet.write(device_config['username'].encode('ascii') + b"\n")
+                telnet.read_until(b"Password:")
+                telnet.write(device_config['password'].encode('ascii') + b"\n")
+                sleep(2)
+                telnet.write(b"display ip interface brief\n")
+                sleep(2)
+                output = telnet.read_very_eager().decode('ascii')
 
-current_time = get_current_time_formatted()
-# 主程序
-def main():
+                ip_address_pattern = rf'{device_config["interface"]}\s+(\S+)/\d+\s+up\s+up\(s\)'
+                ip_address_match = re.search(ip_address_pattern, output)
+                if ip_address_match:
+                    return ip_address_match.group(1)
+            return "IP未找到"
+        except Exception as e:
+            #print("Error: Configuration key not found:", e)
+            logging.error(f"在 get_pppoe_ip 中尝试 {attempt + 1} 失败: {str(e)}")
+            sleep(retry_interval)
+    return None
+
+# 带重试机制的更新Aliyun DNS记录的函数
+def update_dns_record(ip, device_config):
+    max_retries = 5
+    retry_interval = int(device_config['retry_interval'])
+    for attempt in range(max_retries):
+        try:
+            client = AcsClient(device_config['access_key'], device_config['accesskey_secret'], 'cn-hangzhou')
+            request = CommonRequest()
+            request.set_accept_format('json')
+            request.set_domain('alidns.aliyuncs.com')
+            request.set_method('POST')
+            request.set_version('2015-01-09')
+            request.set_action_name('UpdateDomainRecord')
+            request.add_query_param('RecordId', device_config['record_id'])
+            request.add_query_param('RR', device_config['record_name'])
+            request.add_query_param('Type', 'A')
+            request.add_query_param('Value', ip)
+
+            response = client.do_action_with_exception(request)
+            return response
+        except Exception as e:
+            logging.error(f"在 update_dns_record 中尝试 {attempt + 1} 次失败: {str(e)}")
+            sleep(retry_interval)
+    return None
+
+# 获取当前格式化时间的函数
+def get_current_formatted_time():
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+# 单个设备的主要函数
+def main(device_config, last_ip):
+    #print("当前设备配置:", device_config)  # 检查配置内容
     try:
-        logging.info(f"使用 IP 地址: {pppoe_ip}")
-        print(f"{current_time} 使用常量 IP 地址: {pppoe_ip}")
-        update_dns_record(pppoe_ip, Record_name)  # 更新 A 记录
-        logging.info(f"成功更新 DNS 记录: {DOMAIN} ----> {pppoe_ip}")
-        print(f"{current_time} 成功更新 DNS 记录: {DOMAIN} ----> {pppoe_ip}")
+        current_time = get_current_formatted_time()
+        current_ip = get_pppoe_ip(device_config)
+        if current_ip and current_ip != "IP未找到" and current_ip != last_ip:
+            # IP地址发生了变化，执行DDNS更新
+            response = update_dns_record(current_ip, device_config)
+            if response:
+                logging.info(f"已更新DNS记录,将 {device_config['record_name']} 更新为IP {current_ip}")
+                print(f"[{current_time}] 已更新DNS记录,将 {device_config['record_name']} 更新为IP {current_ip}")
+            else:
+                logging.error("更新DNS记录失败。")
+                print(f"[{current_time}] 更新DNS记录失败。")
+            last_ip = current_ip  # 更新last_ip
+        elif current_ip and current_ip != "IP未找到":
+            # IP地址未发生变化，记录日志
+            logging.info(f"{device_config['record_name']} 的IP地址未发生变化")
+        else:
+            # 无法获取IP地址
+            logging.error("无法获取当前IP。")
     except Exception as e:
-        logging.error(f"更新失败: {e}")
-        print(f"{current_time} 更新失败! 请查看log")
-while True:
-     
-     #赋值(与输出)
-     pppoe_ip_last = pppoe_ip
-     pppoe_ip = get_pppoe_ip()
+        current_time = get_current_formatted_time()
+        error_message = f"[{current_time}] 在 main 中发生错误: {str(e)}"
+        logging.error(error_message)
+        print(error_message)
+        traceback.print_exc()
+    return last_ip  # 返回更新后的last_ip
 
-     if pppoe_ip != pppoe_ip_last: #判断ip变化
-         current_time = get_current_time_formatted()
-         print(f'{current_time} 目前的ip是{pppoe_ip}与先前的{pppoe_ip_last}不同,DDNS开始更新')
-         if __name__ == "__main__":
-             main() #DDNS与log
-     else:
-         print(f'{current_time} 当前的ip是{pppoe_ip}与先前的ip相同')
-     sleep(Time)
+# 循环运行每个设备的主要函数
+if __name__ == "__main__":
+    last_ip = {}  # 初始化last_ip字典
+    device_processed = {}  # 初始化设备处理标记字典
+
+    while True:
+        for section in config.sections():
+            device_config = dict(config.items(section))
+            current_time = get_current_formatted_time()
+            print(f"[{current_time}] 正在运行 {section}...")
+
+            # 检查设备是否已处理过
+            if device_processed.get(section, False):
+                # 如已处理过进行延迟
+                sleep(int(device_config['time']))
+
+            try:
+                # 处理设备
+                last_ip[section] = main(device_config, last_ip.get(section))
+            except Exception as e:
+                error_message = f"[{current_time}] 处理 {section} 时发生错误: {e}"
+                print(error_message)
+                logging.error(error_message)
+
+            # 标记设备已处理
+            device_processed[section] = True
